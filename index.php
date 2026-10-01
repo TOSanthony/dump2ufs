@@ -24,7 +24,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         
         // Commande d'exécution vers l'entrypoint bash
-        $cmd = "bash /var/www/html/entrypoint.sh -i " . escapeshellarg($full_input) . " -o " . escapeshellarg($output_filename) . " -y 2>&1";
+        $cmd = "bash /usr/local/bin/entrypoint.sh -i " . escapeshellarg($full_input) . " -o " . escapeshellarg($output_filename) . " -y 2>&1";
         
         $output_log = [];
         $return_var = 0;
