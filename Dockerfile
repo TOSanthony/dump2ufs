@@ -47,6 +47,9 @@ COPY index.php /var/www/html/index.php
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
+# Suppression de la page HTML par défaut d'Apache pour forcer l'affichage de index.php
+RUN rm -f /var/www/html/index.html
+
 # Configuration d'Apache pour écouter et lancer le service web
 EXPOSE 80
 
