@@ -43,7 +43,7 @@ RUN apt-get update && \
 # Copie de vos fichiers web (index.php, etc.) dans le dossier d'Apache
 COPY index.php /var/www/html/index.php
 
-# Copie de l'entrypoint si vous l'utilisez en arrière-plan
+# Copie de l'entrypoint
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
