@@ -64,6 +64,8 @@ for managing game dumps and conversions.
 Create a `docker-compose.yml` file:
 
 ``` yaml
+version: '3.8'
+
 services:
   dump2ufs-gui:
     image: ghcr.io/tosanthony/dump2ufs:latest
