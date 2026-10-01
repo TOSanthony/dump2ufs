@@ -1,26 +1,47 @@
 <?php
-// Logique de traitement si un dossier est soumis
 $message = "";
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'convert') {
-    $input_path = $_POST['input_path'] ?? '';
-    $output_filename = $_POST['output_filename'] ?? 'game.ffpkg';
+$status = "";
+
+$input_dir = "/input";
+$output_dir = "/output";
+
+// Lister les dossiers disponibles dans /input
+$inputs = is_dir($input_dir) ? array_diff(scandir($input_dir), ['.', '..']) : [];
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $selected_input = $_POST['input_path'] ?? '';
+    $output_filename = $_POST['output_filename'] ?? '';
+    $format = $_POST['format'] ?? 'ffpkg';
     
-    if (!empty($input_path)) {
-        $full_input = "/input/" . $input_path;
+    if (!empty($selected_input) && !empty($output_filename)) {
+        $full_input = $input_dir . '/' . $selected_input;
+        
+        // S'assurer de l'extension correcte selon le format choisi
+        if ($format === 'exfat') {
+            if (!str_ends_with($output_filename, '.exfat')) $output_filename .= '.exfat';
+        } else {
+            if (!str_ends_with($output_filename, '.ffpkg')) $output_filename .= '.ffpkg';
+        }
+        
+        // Commande d'exécution vers l'entrypoint bash
         $cmd = "/var/www/html/entrypoint.sh -i " . escapeshellarg($full_input) . " -o " . escapeshellarg($output_filename) . " -y 2>&1";
+        
+        $output_log = [];
+        $return_var = 0;
         exec($cmd, $output_log, $return_var);
         
         if ($return_var === 0) {
-            $message = "[SUCCESS] Conversion terminée avec succès pour : " . htmlspecialchars($input_path);
+            $message = "Conversion réussie ! Fichier généré : " . htmlspecialchars($output_filename);
+            $status = "success";
         } else {
-            $message = "[ERROR] Échec de la conversion : " . htmlspecialchars(implode(" ", $output_log));
+            $message = "Erreur lors de la conversion :<br><pre>" . htmlspecialchars(implode("\n", $output_log)) . "</pre>";
+            $status = "error";
         }
+    } else {
+        $message = "Veuillez sélectionner un dossier et indiquer un nom de fichier de sortie.";
+        $status = "error";
     }
 }
-
-// Récupération des dossiers dans /input
-$input_dir = "/input";
-$folders = is_dir($input_dir) ? array_diff(scandir($input_dir), ['.', '..']) : [];
 ?>
 <!DOCTYPE html>
 <html lang="fr">
@@ -38,6 +59,7 @@ $folders = is_dir($input_dir) ? array_diff(scandir($input_dir), ['.', '..']) : [
       --accent: #3b82f6;
       --accent-hover: #2563eb;
       --success: #10b981;
+      --error: #ef4444;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -50,8 +72,6 @@ $folders = is_dir($input_dir) ? array_diff(scandir($input_dir), ['.', '..']) : [
       justify-content: space-between;
       overflow: hidden;
     }
-    
-    /* Header */
     .app-header {
       display: flex;
       align-items: center;
@@ -64,7 +84,6 @@ $folders = is_dir($input_dir) ? array_diff(scandir($input_dir), ['.', '..']) : [
     .app-version { color: #a855f7; font-size: 12px; font-weight: 500; }
     .app-subtitle { color: var(--text-muted); font-size: 11px; margin-left: 8px; }
 
-    /* Main Container */
     .app-body {
       padding: 20px;
       display: flex;
@@ -75,23 +94,25 @@ $folders = is_dir($input_dir) ? array_diff(scandir($input_dir), ['.', '..']) : [
       width: 100%;
       margin: 0 auto;
     }
-
-    /* Dropzone Box */
     .dropzone {
       background: var(--bg-card);
       border: 1px dashed var(--border-color);
       border-radius: 12px;
-      padding: 24px;
+      padding: 20px;
       text-align: center;
       color: var(--text-muted);
-      transition: border-color 0.2s;
     }
-    .dropzone:hover { border-color: var(--accent); }
-    .dropzone-icon { font-size: 28px; margin-bottom: 8px; }
-    .dropzone-text { font-size: 13px; font-weight: 500; color: var(--text-main); }
-    .dropzone-sub { font-size: 11px; margin-top: 4px; }
-
-    /* Output Row */
+    .dropzone select {
+      margin-top: 10px;
+      width: 100%;
+      max-width: 400px;
+      padding: 10px;
+      background: var(--bg-input);
+      border: 1px solid var(--border-color);
+      color: var(--text-main);
+      border-radius: 6px;
+      font-size: 13px;
+    }
     .output-row {
       display: flex;
       gap: 12px;
@@ -111,19 +132,6 @@ $folders = is_dir($input_dir) ? array_diff(scandir($input_dir), ['.', '..']) : [
       color: var(--text-main);
       font-size: 13px;
     }
-    .btn {
-      background: var(--bg-input);
-      border: 1px solid var(--border-color);
-      color: var(--text-main);
-      padding: 8px 16px;
-      border-radius: 6px;
-      font-size: 13px;
-      cursor: pointer;
-      font-weight: 500;
-    }
-    .btn:hover { background: #374151; }
-
-    /* Queue Section */
     .queue-box {
       flex: 1;
       background: var(--bg-card);
@@ -145,22 +153,12 @@ $folders = is_dir($input_dir) ? array_diff(scandir($input_dir), ['.', '..']) : [
       padding: 16px;
       overflow-y: auto;
       flex: 1;
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
     }
-    .queue-item {
-      background: var(--bg-input);
-      padding: 10px 14px;
-      border-radius: 6px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      font-size: 13px;
-      border: 1px solid var(--border-color);
-    }
+    .alert { padding: 10px; border-radius: 6px; font-size: 12px; margin-bottom: 10px; }
+    .alert.success { background: rgba(16,185,129,0.15); color: var(--success); border: 1px solid rgba(16,185,129,0.3); }
+    .alert.error { background: rgba(239,68,68,0.15); color: var(--error); border: 1px solid rgba(239,68,68,0.3); }
+    pre { white-space: pre-wrap; font-size: 11px; margin-top: 5px; }
 
-    /* Bottom Control Bar */
     .bottom-bar {
       display: flex;
       justify-content: space-between;
@@ -191,22 +189,17 @@ $folders = is_dir($input_dir) ? array_diff(scandir($input_dir), ['.', '..']) : [
       cursor: pointer;
     }
     .btn-convert:hover { background: var(--accent-hover); }
-
-    /* Footer Log Bar */
     .footer-log {
       background: #030712;
       padding: 6px 16px;
       font-size: 11px;
       color: var(--text-muted);
       border-top: 1px solid var(--border-color);
-      display: flex;
-      justify-content: space-between;
     }
   </style>
 </head>
 <body>
 
-  <!-- Header -->
   <div class="app-header">
     <div class="app-title">
       📦 dump2ufs <span class="app-version">v1.4.0</span>
@@ -214,73 +207,66 @@ $folders = is_dir($input_dir) ? array_diff(scandir($input_dir), ['.', '..']) : [
     </div>
   </div>
 
-  <!-- Body -->
-  <div class="app-body">
+  <form method="POST" class="app-body">
     
-    <!-- Zone de glisser-déposer / sélection -->
+    <?php if($message): ?>
+      <div class="alert <?php echo $status; ?>"><?php echo $message; ?></div>
+    <?php endif; ?>
+
+    <!-- Sélection de la source (Remplace le drag & drop impossible dans un navigateur) -->
     <div class="dropzone">
-      <div class="dropzone-icon">📁</div>
-      <div class="dropzone-text">Glissez-déposez vos dossiers de dumps de jeux PS5 ici</div>
-      <div class="dropzone-sub">ou sélectionnez un dossier depuis le volume d'entrée du NAS</div>
+      <div style="font-size: 24px; margin-bottom: 5px;">📁</div>
+      <div style="font-size: 13px; font-weight: 500;">Sélectionnez un dossier de jeu depuis le NAS (/input)</div>
+      <select name="input_path" required>
+        <option value="">-- Choisissez un dossier source --</option>
+        <?php foreach($inputs as $item): ?>
+          <?php if(is_dir($input_dir . '/' . $item)): ?>
+            <option value="<?php echo htmlspecialchars($item); ?>"><?php echo htmlspecialchars($item); ?></option>
+          <?php endif; ?>
+        <?php endforeach; ?>
+      </select>
     </div>
 
     <!-- Output Directory -->
     <div class="output-row">
-      <span class="output-label">📁 Output Directory:</span>
-      <input type="text" class="output-input" value="/output" readonly>
+      <span class="output-label">📁 Output Filename:</span>
+      <input type="text" name="output_filename" class="output-input" placeholder="ex: mon_jeu.ffpkg" required>
     </div>
 
-    <!-- Conversion Queue -->
+    <!-- Conversion Queue / Infos -->
     <div class="queue-box">
       <div class="queue-header">
-        <span>📋 Conversion Queue</span>
-        <button class="btn" style="padding: 4px 10px; font-size: 11px;">Clear Queue</button>
+        <span>📋 Status & Informations</span>
       </div>
       <div class="queue-content">
-        <?php if(empty($folders)): ?>
-          <div style="color: var(--text-muted); text-align: center; margin-top: 40px; font-size: 13px;">
-            Aucun jeu détecté dans le dossier /input de votre Synology.
-          </div>
-        <?php else: ?>
-          <?php foreach($folders as $folder): ?>
-            <div class="queue-item">
-              <span>🎮 <?php echo htmlspecialchars($folder); ?></span>
-              <form method="POST" style="margin:0;">
-                <input type="hidden" name="action" value="convert">
-                <input type="hidden" name="input_path" value="<?php echo htmlspecialchars($folder); ?>">
-                <input type="hidden" name="output_filename" value="<?php echo htmlspecialchars($folder); ?>.ffpkg">
-                <button type="submit" class="btn" style="padding: 4px 10px; font-size: 11px; background: var(--accent); border:none; color:white;">Convertir</button>
-              </form>
-            </div>
-          <?php endforeach; ?>
-        <?php endif; ?>
+        <div style="color: var(--text-muted); font-size: 12px; line-height: 1.5;">
+          • Le dossier source est lu directement depuis votre volume monté sur le NAS (<code style="color:var(--text-main)">/input</code>).<br>
+          • Le fichier converti sera enregistré dans le dossier de sortie (<code style="color:var(--text-main)">/output</code>).
+        </div>
       </div>
     </div>
 
-  </div>
-
-  <!-- Bottom Bar -->
-  <form method="POST" class="bottom-bar">
-    <div class="format-group">
-      <span style="font-size: 13px; color: var(--text-muted);">Format:</span>
-      <select class="select-format">
-        <option>UFS2 Image (.ffpkg)</option>
-        <option>exFAT Image (.exfat)</option>
-      </select>
-      <div class="status-badge">
-        <div class="status-dot"></div>
-        <span>Container ready</span>
+    <!-- Bottom Bar inside form to submit -->
+    <div class="bottom-bar" style="position: absolute; bottom: 24px; left: 0; right: 0; width: 100%;">
+      <div class="format-group">
+        <span style="font-size: 13px; color: var(--text-muted);">Format:</span>
+        <select name="format" class="select-format">
+          <option value="ffpkg">UFS2 Image (.ffpkg)</option>
+          <option value="exfat">exFAT Image (.exfat)</option>
+        </select>
+        <div class="status-badge">
+          <div class="status-dot"></div>
+          <span>Container ready</span>
+        </div>
       </div>
-    </div>
-    <div>
-      <button type="submit" class="btn-convert">⚡ Convert to .ffpkg</option>
+      <div>
+        <button type="submit" class="btn-convert">⚡ Convert to UFS2</button>
+      </div>
     </div>
   </form>
 
-  <!-- Footer Log -->
   <div class="footer-log">
-    <span><?php echo $message ? $message : "Ready — en attente d'action sur le NAS"; ?></span>
-    <span>UFS2Tool v1.4.0</span>
+    <span>Ready — En attente d'une action</span>
   </div>
 
 </body>
