@@ -5,8 +5,25 @@ $status = "";
 $input_dir = "/input";
 $output_dir = "/output";
 
-// Lister les dossiers disponibles dans /input
-$inputs = is_dir($input_dir) ? array_diff(scandir($input_dir), ['.', '..']) : [];
+// Extensions d'archives supportées
+$archive_extensions = ['rar', 'zip', '7z', 'tar', 'gz', 'bz2'];
+
+// Lister les éléments disponibles dans /input (dossiers et fichiers valides)
+$inputs = [];
+if (is_dir($input_dir)) {
+    $scan = array_diff(scandir($input_dir), ['.', '..']);
+    foreach ($scan as $item) {
+        $path = $input_dir . '/' . $item;
+        if (is_dir($path)) {
+            $inputs[] = $item;
+        } else {
+            $ext = strtolower(pathinfo($item, PATHINFO_EXTENSION));
+            if (in_array($ext, $archive_extensions)) {
+                $inputs[] = $item;
+            }
+        }
+    }
+}
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $selected_input = $_POST['input_path'] ?? '';
@@ -23,7 +40,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (!str_ends_with($output_filename, '.ffpkg')) $output_filename .= '.ffpkg';
         }
         
-        // Commande d'exécution vers l'entrypoint bash
+        // Commande d'exécution vers l'entrypoint bash (gère automatiquement les dossiers ou les fichiers .rar)
         $cmd = "bash /usr/local/bin/entrypoint.sh -i " . escapeshellarg($full_input) . " -o " . escapeshellarg($output_filename) . " -y 2>&1";
         
         $output_log = [];
@@ -38,7 +55,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $status = "error";
         }
     } else {
-        $message = "Veuillez sélectionner un dossier et indiquer un nom de fichier de sortie.";
+        $message = "Veuillez sélectionner un élément source et indiquer un nom de fichier de sortie.";
         $status = "error";
     }
 }
@@ -213,16 +230,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       <div class="alert <?php echo $status; ?>"><?php echo $message; ?></div>
     <?php endif; ?>
 
-    <!-- Sélection de la source (Remplace le drag & drop impossible dans un navigateur) -->
+    <!-- Sélection de la source (Dossier ou Archive .rar / .zip) -->
     <div class="dropzone">
-      <div style="font-size: 24px; margin-bottom: 5px;">📁</div>
-      <div style="font-size: 13px; font-weight: 500;">Sélectionnez un dossier de jeu depuis le NAS (/input)</div>
+      <div style="font-size: 24px; margin-bottom: 5px;">📂</div>
+      <div style="font-size: 13px; font-weight: 500;">Sélectionnez un dossier de jeu ou une archive (.rar) depuis /input</div>
       <select name="input_path" required>
-        <option value="">-- Choisissez un dossier source --</option>
+        <option value="">-- Choisissez un dossier ou une archive source --</option>
         <?php foreach($inputs as $item): ?>
-          <?php if(is_dir($input_dir . '/' . $item)): ?>
-            <option value="<?php echo htmlspecialchars($item); ?>"><?php echo htmlspecialchars($item); ?></option>
-          <?php endif; ?>
+          <option value="<?php echo htmlspecialchars($item); ?>"><?php echo htmlspecialchars($item); ?></option>
         <?php endforeach; ?>
       </select>
     </div>
@@ -240,8 +255,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       </div>
       <div class="queue-content">
         <div style="color: var(--text-muted); font-size: 12px; line-height: 1.5;">
-          • Le dossier source est lu directement depuis votre volume monté sur le NAS (<code style="color:var(--text-main)">/input</code>).<br>
-          • Le fichier converti sera enregistré dans le dossier de sortie (<code style="color:var(--text-main)">/output</code>).
+          • Compatible avec les dossiers de jeux et les archives compressées (<code style="color:var(--text-main)">.rar</code>, etc.) situés dans <code style="color:var(--text-main)">/input</code>.<br>
+          • L'outil monte automatiquement les archives via FUSE et génère le fichier UFS2 dans <code style="color:var(--text-main)">/output</code>.
         </div>
       </div>
     </div>
