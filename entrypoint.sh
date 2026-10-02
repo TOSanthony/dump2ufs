@@ -7,6 +7,9 @@ UFS_LABEL=""
 NO_CONFIRMATION=false
 INPUT_PATH=""
 
+# Point de montage temporaire basé dans le dossier /output
+MOUNT_DIR="/output/.archive_mount"
+
 # Parse command-line arguments
 while getopts "o:l:i:y" opt; do
     case $opt in
@@ -53,9 +56,10 @@ cleanup() {
         kill "$FUSE_PID" 2>/dev/null || true
         wait "$FUSE_PID" 2>/dev/null || true
     fi
-    if mountpoint -q /archive 2>/dev/null; then
-        umount /archive 2>/dev/null || true
+    if mountpoint -q "$MOUNT_DIR" 2>/dev/null; then
+        umount "$MOUNT_DIR" 2>/dev/null || true
     fi
+    rm -rf "$MOUNT_DIR"
 }
 
 trap cleanup EXIT
@@ -65,6 +69,9 @@ if [ ! -d /output ]; then
     echo "Error: /output directory does not exist. Please mount an output directory."
     exit 1
 fi
+
+# Création du dossier de montage dans /output
+mkdir -p "$MOUNT_DIR"
 
 # Validate UFS_LABEL if provided
 if [ -n "$UFS_LABEL" ]; then
@@ -80,8 +87,6 @@ fi
 
 # Function to check if we have SYS_ADMIN capability
 has_sys_admin() {
-    # CAP_SYS_ADMIN is bit 21 (0x200000 in hex)
-    # Read effective capabilities from /proc/self/status
     local cap_eff=$(grep CapEff /proc/self/status 2>/dev/null | awk '{print $2}')
     if [ -n "$cap_eff" ]; then
         local cap_dec=$((16#$cap_eff))
@@ -93,21 +98,20 @@ has_sys_admin() {
     return 1
 }
 
-# Function to mount an archive file with fuse-archive
+# Function to mount an archive file with fuse-archive inside /output/.archive_mount
 mount_with_fuse_archive() {
     local source_file="$1"
-    echo "Mounting $source_file with fuse-archive..."
+    echo "Mounting $source_file with fuse-archive to $MOUNT_DIR..."
     
-    # Start fuse-archive in the background, redirecting its output to stdout
-    fuse-archive -o nocache,nospecials,nosymlinks,nohardlinks,noxattrs,umask=0000,dmask=0000,fmask=0000,clone_fd -f -v "$source_file" /archive 2>&1 &
+    # Start fuse-archive in the background
+    fuse-archive -o nocache,nospecials,nosymlinks,nohardlinks,noxattrs,umask=0000,dmask=0000,fmask=0000,clone_fd -f -v "$source_file" "$MOUNT_DIR" 2>&1 &
     FUSE_PID=$!
     
-    # Wait until /archive is available
-    echo "Waiting for /archive/ to become available..."
+    # Wait until mount dir is available
+    echo "Waiting for $MOUNT_DIR to become available..."
     while true; do
-        # Check if fuse-archive process is still running
         if ! kill -0 $FUSE_PID 2>/dev/null; then
-            echo "Error: fuse-archive process exited before /archive became available."
+            echo "Error: fuse-archive process exited before $MOUNT_DIR became available."
             if ! has_sys_admin; then
                 echo "Most likely because the SYS_ADMIN capability has not been granted to the container."
             fi
@@ -115,17 +119,17 @@ mount_with_fuse_archive() {
             exit 1
         fi
         
-        if mountpoint -q /archive 2>/dev/null || [ "$(ls -A /archive 2>/dev/null)" ]; then
-            echo "/archive/ is now available"
+        if mountpoint -q "$MOUNT_DIR" 2>/dev/null || [ "$(ls -A "$MOUNT_DIR" 2>/dev/null)" ]; then
+            echo "$MOUNT_DIR is now available"
             break
         fi
         sleep 0.5
     done
     
     # Check for sce_sys/param.json file
-    if [ -f /archive/sce_sys/param.json ]; then
-        echo "Found sce_sys/param.json in /archive"
-        SOURCE_DIR="/archive"
+    if [ -f "$MOUNT_DIR/sce_sys/param.json" ]; then
+        echo "Found sce_sys/param.json in $MOUNT_DIR"
+        SOURCE_DIR="$MOUNT_DIR"
     else
         echo "sce_sys/param.json not in root, checking subdirectories (one level deep)..."
         found=false
@@ -136,7 +140,7 @@ mount_with_fuse_archive() {
                 found=true
                 break
             fi
-        done < <(find /archive -maxdepth 1 -type d ! -path /archive)
+        done < <(find "$MOUNT_DIR" -maxdepth 1 -type d ! -path "$MOUNT_DIR")
         
         if [ "$found" = false ]; then
             echo "Error: sce_sys/param.json file not found in the root of, or any subdirectory of the archive: $source_file. Are you sure this is a valid PS5 dump?"
@@ -149,7 +153,6 @@ mount_with_fuse_archive() {
 if [ -f "$INPUT_PATH" ]; then
     echo "Detected input as a file: $INPUT_PATH"
     
-    # Verify FUSE requirements for archive files
     if [ ! -e /dev/fuse ]; then
         echo "Error: /dev/fuse not found. Add --device /dev/fuse to the docker run command."
         exit 1
@@ -160,7 +163,6 @@ elif [ -d "$INPUT_PATH" ]; then
     INPUT_PATH="$(realpath "$INPUT_PATH")"
     echo "Detected input as a directory: $INPUT_PATH"
     
-    # Check for sce_sys/param.json file
     if [ -f "$INPUT_PATH/sce_sys/param.json" ]; then
         echo "Found sce_sys/param.json, using directory directly"
         SOURCE_DIR="$INPUT_PATH"
@@ -184,14 +186,11 @@ best_b=""
 best_f=""
 
 for b in "${b_values[@]}"; do
-    f=$(( b / 8 )) # always best
+    f=$(( b / 8 ))
 
     rm -f /tmp/test.out
 
-    # Capture error message which contains the calculated size of the image with the given block and fragment sizes
     output=$(makefs -b 0 -o b=$b,f=$f,m=0,v=2,o=space -s $b /tmp/test.out "$SOURCE_DIR" 2>&1 || true)
-
-    # Extract the image size from the error message
     size=$(printf '%s\n' "$output" | sed -n 's/.* size of \([0-9]\+\) .*/\1/p' | head -n1)
 
     if [[ -n "$size" ]]; then
@@ -210,18 +209,16 @@ DIR_LISTING=$(ls -1shpd --quoting-style=escape --group-directories-first --color
 
 # Parse game title and ID from param.json
 PARAM_JSON="$SOURCE_DIR/sce_sys/param.json"
-# Parse titleId
 TITLE_ID=$(jq -r '.titleId // empty' "$PARAM_JSON")
 if [ -z "$TITLE_ID" ]; then
     echo "Error: Failed to parse titleId from param.json"
     exit 1
 fi
-# Parse title name
+
 DEFAULT_LANG=$(jq -r '.localizedParameters.defaultLanguage // empty' "$PARAM_JSON")
 if [ -n "$DEFAULT_LANG" ]; then
     TITLE_NAME=$(jq -r --arg lang "$DEFAULT_LANG" '.localizedParameters[$lang].titleName // empty' "$PARAM_JSON")
 else
-    # Fallback to en-US if defaultLanguage is not present
     TITLE_NAME=$(jq -r '.localizedParameters["en-US"].titleName // empty' "$PARAM_JSON")
 fi
 
@@ -230,7 +227,6 @@ if [ -z "$TITLE_NAME" ]; then
     exit 1
 fi
 
-# If no label provided, construct default from title info
 if [ -z "$UFS_LABEL" ]; then
     TITLE_NAME_CLEAN=$(echo "$TITLE_NAME" | tr -cd 'A-Za-z0-9')
     TITLE_ID_CLEAN=$(echo "$TITLE_ID" | tr -cd 'A-Za-z0-9')
@@ -247,9 +243,7 @@ echo "Detected optimal block size for smallest image: $best_b, fragment size: $b
 echo "Resulting UFS2 filesystem image size will be: $best_size bytes (~ ${gb_int}.${gb_frac} GB)"
 echo "The output filename will be: $OUTPUT_FILENAME"
 echo ""
-echo "Will run makefs with this command line:"
-echo "makefs -b 0 -Z -o \"b=$best_b,f=$best_f,m=0,v=2,o=space${UFS_LABEL:+,l=$UFS_LABEL}\" \"/output/$OUTPUT_FILENAME\" \"$SOURCE_DIR\""
-echo ""
+
 if [ "$NO_CONFIRMATION" = false ]; then
     while true; do
         read -p "Please verify the above is correct. Continue? (y/n): " -r
