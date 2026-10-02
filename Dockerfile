@@ -8,6 +8,7 @@ RUN apt-get update && \
     apt-get install -y \
     wget \
     jq \
+    fuse3 \
     libfuse3-4 \
     libarchive13t64 \
     gcc \
