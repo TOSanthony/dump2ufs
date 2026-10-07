@@ -79,6 +79,7 @@ services:
       - SYS_ADMIN
     devices:
       - /dev/fuse:/dev/fuse
+    privileged: true
     restart: unless-stopped
 ```
 
