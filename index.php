@@ -24,16 +24,20 @@ $actions = [
 // Lister tous les éléments disponibles dans /input
 $all_inputs = [];
 if (is_dir($input_dir)) {
-    $scan = array_diff(scandir($input_dir), ['.', '..']);
-    foreach ($scan as $item) {
-        $path = $input_dir . '/' . $item;
-        $is_dir = is_dir($path);
-        $ext = strtolower(pathinfo($item, PATHINFO_EXTENSION));
-        $all_inputs[] = [
-            'name' => $item,
-            'is_dir' => $is_dir,
-            'ext' => $ext
-        ];
+    $scanned = @scandir($input_dir);
+    if ($scanned !== false) {
+        $scan = array_diff($scanned, ['.', '..']);
+        foreach ($scan as $item) {
+            $path = $input_dir . '/' . $item;
+            $all_inputs[] = [
+                'name' => $item,
+                'is_dir' => is_dir($path),
+                'ext' => strtolower(pathinfo($item, PATHINFO_EXTENSION))
+            ];
+        }
+    } else {
+        $message = "Attention : permissions insuffisantes pour lire le dossier /input.";
+        $status = "error";
     }
 }
 
