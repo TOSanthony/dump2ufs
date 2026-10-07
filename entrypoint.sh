@@ -6,11 +6,13 @@ OUTPUT_TARGET=""
 UFS_LABEL=""
 NO_CONFIRMATION=false
 INPUT_PATH=""
-ACTION_MODE="dump_to_ffpkg" # Mode par défaut
+ACTION_MODE="dump_to_ffpkg"
 
 # Points de montage temporaires
 MOUNT_DIR="/tmp/.archive_mount"
 IMG_MOUNT_DIR="/tmp/.img_mount"
+TEMP_EXFAT=""
+EXFAT_BUILD_DIR="/tmp/.exfat_build"
 
 # Parse command-line arguments
 while getopts "m:o:l:i:y" opt; do
@@ -60,11 +62,16 @@ cleanup() {
     if mountpoint -q "$IMG_MOUNT_DIR" 2>/dev/null; then
         umount "$IMG_MOUNT_DIR" 2>/dev/null || true
     fi
-    rm -rf "$MOUNT_DIR" "$IMG_MOUNT_DIR"
+    if mountpoint -q "$EXFAT_BUILD_DIR" 2>/dev/null; then
+        umount "$EXFAT_BUILD_DIR" 2>/dev/null || true
+    fi
+    if [ -n "$TEMP_EXFAT" ] && [ -f "$TEMP_EXFAT" ]; then
+        rm -f "$TEMP_EXFAT" 2>/dev/null || true
+    fi
+    rm -rf "$MOUNT_DIR" "$IMG_MOUNT_DIR" "$EXFAT_BUILD_DIR"
 }
 trap cleanup EXIT
 
-# Montage transparent des archives (.rar, .zip, etc.)
 mount_archive_if_needed() {
     local src="$1"
     if [ -f "$src" ]; then
@@ -82,7 +89,6 @@ mount_archive_if_needed() {
             sleep 0.5
         done
         SOURCE_DIR="$MOUNT_DIR"
-        # Recherche param.json à la racine ou au 1er sous-dossier
         if [ ! -f "$SOURCE_DIR/sce_sys/param.json" ]; then
             while IFS= read -r subdir; do
                 if [ -f "$subdir/sce_sys/param.json" ]; then
@@ -96,12 +102,24 @@ mount_archive_if_needed() {
     fi
 }
 
-# Montage d'une image disque (.exfat / .iso / image brute)
 mount_disk_image() {
     local img="$1"
     echo "Montage loop de l'image disque : $img"
     mount -o loop,ro "$img" "$IMG_MOUNT_DIR"
     SOURCE_DIR="$IMG_MOUNT_DIR"
+}
+
+# Fonction helper pour décompresser un .ffpfsc sans bloquer
+decompress_ffpfsc() {
+    local in_file="$1"
+    local out_file="$2"
+    echo "Décompression du flux compressé vers $out_file..."
+    rm -f "$out_file"
+    if ! zstd -d -f --sparse "$in_file" -o "$out_file"; then
+        echo "zstd a échoué, essai via fpkg-cli..."
+        rm -f "$out_file"
+        fpkg-cli decompress --input "$in_file" --output "$out_file"
+    fi
 }
 
 echo "=== Action demandée : $ACTION_MODE ==="
@@ -152,17 +170,16 @@ case "$ACTION_MODE" in
         mount_archive_if_needed "$INPUT_PATH"
         echo "Calcul de la taille requise..."
         size_kb=$(du -s -B1K "$SOURCE_DIR" | awk '{print $1}')
-        total_kb=$(( size_kb + 102400 )) # Marge de 100 Mo pour les tables exFAT
+        total_kb=$(( size_kb + 102400 ))
 
         OUT_FILE="/output/$OUTPUT_TARGET"
         truncate -s "${total_kb}K" "$OUT_FILE"
         mkfs.exfat "$OUT_FILE"
 
-        mkdir -p /tmp/.exfat_build
-        mount -o loop "$OUT_FILE" /tmp/.exfat_build
-        cp -a "$SOURCE_DIR"/* /tmp/.exfat_build/ 2>/dev/null || true
-        umount /tmp/.exfat_build
-        rmdir /tmp/.exfat_build
+        mkdir -p "$EXFAT_BUILD_DIR"
+        mount -o loop "$OUT_FILE" "$EXFAT_BUILD_DIR"
+        cp -a "$SOURCE_DIR"/* "$EXFAT_BUILD_DIR/" 2>/dev/null || true
+        umount "$EXFAT_BUILD_DIR"
         ;;
 
     # 3. Dossier source vers PS5 PKG (.pkg)
@@ -174,38 +191,33 @@ case "$ACTION_MODE" in
     # 4. Image (.exfat / .ffpfsc) vers PS5 PKG (.pkg)
     image_to_pkg)
         INPUT_TO_MOUNT="$INPUT_PATH"
-        # Si fichier .ffpfsc, décompression préalable temporaire
         if [[ "$INPUT_PATH" =~ \.ffpfsc$ ]]; then
-            echo "Décompression temporaire du fichier .ffpfsc vers .exfat..."
-            truncate -s 0 /tmp/temp_decompressed.exfat
-            # Utilisation de fpkg-cli ou l'outil de décompression de flux
-            fpkg-cli decompress --input "$INPUT_PATH" --output /tmp/temp_decompressed.exfat || zstd -d "$INPUT_PATH" -o /tmp/temp_decompressed.exfat
-            INPUT_TO_MOUNT="/tmp/temp_decompressed.exfat"
+            TEMP_EXFAT="/output/.temp_exfat_${RANDOM}.img"
+            decompress_ffpfsc "$INPUT_PATH" "$TEMP_EXFAT"
+            INPUT_TO_MOUNT="$TEMP_EXFAT"
         fi
 
         mount_disk_image "$INPUT_TO_MOUNT"
-        echo "Génération du PKG depuis le montage..."
+        echo "Génération du PKG depuis le point de montage..."
         fpkg-cli create --input "$SOURCE_DIR" --output "/output/$OUTPUT_TARGET"
         umount "$IMG_MOUNT_DIR"
-        rm -f /tmp/temp_decompressed.exfat
         ;;
 
     # 5. Extraction d'une image (.exfat / .ffpfsc) vers un dossier
     extract_image)
         INPUT_TO_MOUNT="$INPUT_PATH"
         if [[ "$INPUT_PATH" =~ \.ffpfsc$ ]]; then
-            echo "Décompression temporaire .ffpfsc..."
-            fpkg-cli decompress --input "$INPUT_PATH" --output /tmp/temp_decompressed.exfat || zstd -d "$INPUT_PATH" -o /tmp/temp_decompressed.exfat
-            INPUT_TO_MOUNT="/tmp/temp_decompressed.exfat"
+            TEMP_EXFAT="/output/.temp_exfat_${RANDOM}.img"
+            decompress_ffpfsc "$INPUT_PATH" "$TEMP_EXFAT"
+            INPUT_TO_MOUNT="$TEMP_EXFAT"
         fi
 
         mount_disk_image "$INPUT_TO_MOUNT"
         DEST_DIR="/output/$OUTPUT_TARGET"
         mkdir -p "$DEST_DIR"
-        echo "Copie des fichiers vers $DEST_DIR..."
+        echo "Extraction des fichiers vers $DEST_DIR..."
         cp -a "$SOURCE_DIR"/* "$DEST_DIR/"
         umount "$IMG_MOUNT_DIR"
-        rm -f /tmp/temp_decompressed.exfat
         ;;
 
     # 6. Extraction d'un package .pkg vers un dossier
@@ -218,23 +230,14 @@ case "$ACTION_MODE" in
 
     # 7. Compression .exfat vers .ffpfsc
     exfat_to_ffpfsc)
-        echo "Compression de l'image exFAT vers le format ffpfsc..."
-        # fpkg-cli ou compresseur de flux de blocs (sparse zstd / ffpfsc builder)
-        if command -v fpkg-cli &>/dev/null; then
-            fpkg-cli compress --input "$INPUT_PATH" --output "/output/$OUTPUT_TARGET"
-        else
-            zstd -19 --sparse "$INPUT_PATH" -o "/output/$OUTPUT_TARGET"
-        fi
+        echo "Compression de l'image exFAT vers .ffpfsc..."
+        rm -f "/output/$OUTPUT_TARGET"
+        zstd -19 -f --sparse "$INPUT_PATH" -o "/output/$OUTPUT_TARGET"
         ;;
 
-    # 8. Décompression .ffpfsc vers .exfat
+    # 8. Décompression .ffpfsc vers .exfat brute
     ffpfsc_to_exfat)
-        echo "Décompression de l'image .ffpfsc vers .exfat brute..."
-        if command -v fpkg-cli &>/dev/null; then
-            fpkg-cli decompress --input "$INPUT_PATH" --output "/output/$OUTPUT_TARGET"
-        else
-            zstd -d "$INPUT_PATH" -o "/output/$OUTPUT_TARGET"
-        fi
+        decompress_ffpfsc "$INPUT_PATH" "/output/$OUTPUT_TARGET"
         ;;
 
     *)
