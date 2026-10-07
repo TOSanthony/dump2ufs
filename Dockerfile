@@ -43,11 +43,12 @@ FROM debian:13-slim
 ARG TARGETARCH
 ENV DEBIAN_FRONTEND=noninteractive
 
-# 1. Dépendances d'exécution (Apache, PHP, FUSE, utilitaires disques, zstd)
+# 1. Dépendances d'exécution (Apache, PHP, FUSE, utilitaires disques, unzip, zstd)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     wget \
+    unzip \
     jq \
     fuse3 \
     libfuse3-4 \
@@ -70,12 +71,14 @@ COPY --from=builder /usr/local/bin/fuse-archive /usr/local/bin/fuse-archive
 RUN curl -sSL https://dot.net/v1/dotnet-install.sh | bash /dev/stdin --runtime dotnet --install-dir /usr/share/dotnet && \
     ln -s /usr/share/dotnet/dotnet /usr/local/bin/dotnet
 
-# 4. Installation de fpkg-cli selon l'architecture cible (amd64 / arm64)
+# 4. Téléchargement et extraction de fpkg-cli (.zip)
 RUN ARCH_PATTERN=$([ "$TARGETARCH" = "arm64" ] && echo "linux-arm64" || echo "linux-x64") && \
-    FPKG_URL=$(curl -s https://api.github.com/repos/SvenGDK/LibProsperoPkg/releases/latest | jq -r --arg pat "$ARCH_PATTERN" '.assets[] | select(.name | test($pat + ".*(tar\\.gz|zip)$")) | .browser_download_url' | head -n 1) && \
+    FPKG_URL=$(curl -s https://api.github.com/repos/SvenGDK/LibProsperoPkg/releases/latest | jq -r --arg pat "$ARCH_PATTERN" '.assets[] | select(.name | test($pat + ".*\\.zip$")) | .browser_download_url' | head -n 1) && \
     mkdir -p /opt/fpkg-cli && \
     if [ -n "$FPKG_URL" ]; then \
-        wget -qO- "$FPKG_URL" | tar -xz -C /opt/fpkg-cli/ && \
+        wget -q -O /tmp/fpkg-cli.zip "$FPKG_URL" && \
+        unzip -q /tmp/fpkg-cli.zip -d /opt/fpkg-cli/ && \
+        rm -f /tmp/fpkg-cli.zip && \
         chmod +x /opt/fpkg-cli/fpkg-cli && \
         ln -s /opt/fpkg-cli/fpkg-cli /usr/local/bin/fpkg-cli; \
     fi
