@@ -26,15 +26,14 @@ RUN wget -O - https://github.com/kusumi/makefs/archive/refs/${MAKEFS_REF}.tar.gz
     cd /makefs-${MAKEFS_REF##*/} && \
     make USE_HAMMER2=0 USE_EXFAT=0 && \
     make install && \
-    # makefs s'installe généralement dans /usr/sbin ou /usr/local/sbin
     cp $(find /makefs-${MAKEFS_REF##*/} -name makefs -type f -perm /111 | head -n 1) /usr/local/bin/makefs
 
-# 2. Compilation de fuse-archive
+# 2. Compilation de fuse-archive (binaire situé dans out/)
 RUN wget -O - https://github.com/google/fuse-archive/archive/refs/${FUSE_ARCHIVE_REF}.tar.gz | tar -xz -C / && \
     FUSE_DIR=${FUSE_ARCHIVE_REF##*/} && \
     cd /fuse-archive-${FUSE_DIR#v} && \
     make VERSION="${FUSE_ARCHIVE_REF##*/}" && \
-    cp fuse-archive /usr/local/bin/fuse-archive
+    cp out/fuse-archive /usr/local/bin/fuse-archive
 
 # ==========================================
 # Étape 2 : Image finale d'exécution
