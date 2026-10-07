@@ -2,19 +2,24 @@
 set -euo pipefail
 
 FUSE_PID=""
-OUTPUT_FILENAME=""
+OUTPUT_TARGET=""
 UFS_LABEL=""
 NO_CONFIRMATION=false
 INPUT_PATH=""
+ACTION_MODE="dump_to_ffpkg" # Mode par défaut
 
-# Point de montage temporaire basé dans le dossier /output
-MOUNT_DIR="/output/.archive_mount"
+# Points de montage temporaires
+MOUNT_DIR="/tmp/.archive_mount"
+IMG_MOUNT_DIR="/tmp/.img_mount"
 
 # Parse command-line arguments
-while getopts "o:l:i:y" opt; do
+while getopts "m:o:l:i:y" opt; do
     case $opt in
+        m)
+            ACTION_MODE="$OPTARG"
+            ;;
         o)
-            OUTPUT_FILENAME="$OPTARG"
+            OUTPUT_TARGET="$OPTARG"
             ;;
         l)
             UFS_LABEL="$OPTARG"
@@ -26,238 +31,216 @@ while getopts "o:l:i:y" opt; do
             NO_CONFIRMATION=true
             ;;
         *)
-            echo "Usage: $0 -i input_path [-l ufs_label] [-y] -o output_filename"
-            echo "  -i: Input path (file or directory) (required)"
-            echo "  -l: UFS filesystem label (max 16 chars, default: auto-generated from title info)"
-            echo "  -y: Skip confirmation prompt"
-            echo "  -o: Output filename (required)"
+            echo "Usage: $0 -i input_path -o output_target [-m action_mode] [-l ufs_label] [-y]"
             exit 1
             ;;
     esac
 done
 
-# Validate required parameters
-if [ -z "$OUTPUT_FILENAME" ]; then
-    echo "Error: -o output_filename is required"
-    echo "Usage: $0 -i input_path [-l ufs_label] [-y] -o output_filename"
+if [ -z "$OUTPUT_TARGET" ] || [ -z "$INPUT_PATH" ]; then
+    echo "Error: -i input_path and -o output_target are required"
     exit 1
 fi
 
-if [ -z "$INPUT_PATH" ]; then
-    echo "Error: -i input_path is required"
-    echo "Usage: $0 -i input_path [-l ufs_label] [-y] -o output_filename"
+if [ ! -d /output ]; then
+    echo "Error: /output directory does not exist."
     exit 1
 fi
 
-# Cleanup function to shut down fuse-archive
+mkdir -p "$MOUNT_DIR" "$IMG_MOUNT_DIR"
+
 cleanup() {
     if [ -n "$FUSE_PID" ]; then
-        echo "Shutting down fuse-archive..."
         kill "$FUSE_PID" 2>/dev/null || true
         wait "$FUSE_PID" 2>/dev/null || true
     fi
     if mountpoint -q "$MOUNT_DIR" 2>/dev/null; then
         umount "$MOUNT_DIR" 2>/dev/null || true
     fi
-    rm -rf "$MOUNT_DIR"
+    if mountpoint -q "$IMG_MOUNT_DIR" 2>/dev/null; then
+        umount "$IMG_MOUNT_DIR" 2>/dev/null || true
+    fi
+    rm -rf "$MOUNT_DIR" "$IMG_MOUNT_DIR"
 }
-
 trap cleanup EXIT
 
-# Check if /output is mounted
-if [ ! -d /output ]; then
-    echo "Error: /output directory does not exist. Please mount an output directory."
-    exit 1
-fi
-
-# Création du dossier de montage dans /output
-mkdir -p "$MOUNT_DIR"
-
-# Validate UFS_LABEL if provided
-if [ -n "$UFS_LABEL" ]; then
-    if [ ${#UFS_LABEL} -gt 16 ]; then
-        echo "Error: UFS_LABEL can't exceed 16 chars (provided: '$UFS_LABEL')"
-        exit 1
-    fi
-    if [[ ! "$UFS_LABEL" =~ ^[A-Za-z0-9._-]+$ ]]; then
-        echo "Error: UFS_LABEL can only contain letters, numbers, dots, underscores, and hyphens (provided: '$UFS_LABEL')"
-        exit 1
-    fi
-fi
-
-# Function to check if we have SYS_ADMIN capability
-has_sys_admin() {
-    local cap_eff=$(grep CapEff /proc/self/status 2>/dev/null | awk '{print $2}')
-    if [ -n "$cap_eff" ]; then
-        local cap_dec=$((16#$cap_eff))
-        local sys_admin_bit=2097152  # CAP_SYS_ADMIN is bit 21 (1 << 21)
-        if [ $(( cap_dec & sys_admin_bit )) -ne 0 ]; then
-            return 0
-        fi
-    fi
-    return 1
-}
-
-# Function to mount an archive file with fuse-archive inside /output/.archive_mount
-mount_with_fuse_archive() {
-    local source_file="$1"
-    echo "Mounting $source_file with fuse-archive to $MOUNT_DIR..."
-    
-    # Start fuse-archive in the background
-    fuse-archive -o nocache,nospecials,nosymlinks,nohardlinks,noxattrs,umask=0000,dmask=0000,fmask=0000,clone_fd -f -v "$source_file" "$MOUNT_DIR" 2>&1 &
-    FUSE_PID=$!
-    
-    # Wait until mount dir is available
-    echo "Waiting for $MOUNT_DIR to become available..."
-    while true; do
-        if ! kill -0 $FUSE_PID 2>/dev/null; then
-            echo "Error: fuse-archive process exited before $MOUNT_DIR became available."
-            if ! has_sys_admin; then
-                echo "Most likely because the SYS_ADMIN capability has not been granted to the container."
+# Montage transparent des archives (.rar, .zip, etc.)
+mount_archive_if_needed() {
+    local src="$1"
+    if [ -f "$src" ]; then
+        echo "Montage de l'archive via fuse-archive..."
+        fuse-archive -o nocache,nospecials,nosymlinks,nohardlinks,noxattrs,umask=0000,dmask=0000,fmask=0000,clone_fd -f -v "$src" "$MOUNT_DIR" 2>&1 &
+        FUSE_PID=$!
+        while true; do
+            if ! kill -0 $FUSE_PID 2>/dev/null; then
+                echo "Erreur lors du montage fuse-archive."
+                exit 1
             fi
-            echo "When providing an archive file as input, make sure to use a format supported by fuse-archive, ensure that the file is not corrupted, and add --device /dev/fuse --cap-add SYS_ADMIN to the docker run command."
-            exit 1
-        fi
-        
-        if mountpoint -q "$MOUNT_DIR" 2>/dev/null || [ "$(ls -A "$MOUNT_DIR" 2>/dev/null)" ]; then
-            echo "$MOUNT_DIR is now available"
-            break
-        fi
-        sleep 0.5
-    done
-    
-    # Check for sce_sys/param.json file
-    if [ -f "$MOUNT_DIR/sce_sys/param.json" ]; then
-        echo "Found sce_sys/param.json in $MOUNT_DIR"
-        SOURCE_DIR="$MOUNT_DIR"
-    else
-        echo "sce_sys/param.json not in root, checking subdirectories (one level deep)..."
-        found=false
-        while IFS= read -r subdir; do
-            if [ -f "$subdir/sce_sys/param.json" ]; then
-                echo "Found sce_sys/param.json in $subdir"
-                SOURCE_DIR="$subdir"
-                found=true
+            if mountpoint -q "$MOUNT_DIR" 2>/dev/null || [ "$(ls -A "$MOUNT_DIR" 2>/dev/null)" ]; then
                 break
             fi
-        done < <(find "$MOUNT_DIR" -maxdepth 1 -type d ! -path "$MOUNT_DIR")
-        
-        if [ "$found" = false ]; then
-            echo "Error: sce_sys/param.json file not found in the root of, or any subdirectory of the archive: $source_file. Are you sure this is a valid PS5 dump?"
-            exit 1
+            sleep 0.5
+        done
+        SOURCE_DIR="$MOUNT_DIR"
+        # Recherche param.json à la racine ou au 1er sous-dossier
+        if [ ! -f "$SOURCE_DIR/sce_sys/param.json" ]; then
+            while IFS= read -r subdir; do
+                if [ -f "$subdir/sce_sys/param.json" ]; then
+                    SOURCE_DIR="$subdir"
+                    break
+                fi
+            done < <(find "$MOUNT_DIR" -maxdepth 1 -type d ! -path "$MOUNT_DIR")
         fi
+    else
+        SOURCE_DIR="$(realpath "$src")"
     fi
 }
 
-# Check if input path exists and is a file or directory
-if [ -f "$INPUT_PATH" ]; then
-    echo "Detected input as a file: $INPUT_PATH"
-    
-    if [ ! -e /dev/fuse ]; then
-        echo "Error: /dev/fuse not found. Add --device /dev/fuse to the docker run command."
-        exit 1
-    fi
-    
-    mount_with_fuse_archive "$INPUT_PATH"
-elif [ -d "$INPUT_PATH" ]; then
-    INPUT_PATH="$(realpath "$INPUT_PATH")"
-    echo "Detected input as a directory: $INPUT_PATH"
-    
-    if [ -f "$INPUT_PATH/sce_sys/param.json" ]; then
-        echo "Found sce_sys/param.json, using directory directly"
-        SOURCE_DIR="$INPUT_PATH"
-    else
-        echo "Error: sce_sys/param.json not found in $INPUT_PATH"
-        echo "For archive files, provide the full path to the archive file with -i"
-        echo "Contents of $INPUT_PATH:"
-        ls -1shpd --quoting-style=escape --group-directories-first --color=auto "$INPUT_PATH"/*
-        exit 1
-    fi
-else
-    echo "Error: Input path does not exist or is not accessible: $INPUT_PATH"
-    exit 1
-fi
+# Montage d'une image disque (.exfat / .iso / image brute)
+mount_disk_image() {
+    local img="$1"
+    echo "Montage loop de l'image disque : $img"
+    mount -o loop,ro "$img" "$IMG_MOUNT_DIR"
+    SOURCE_DIR="$IMG_MOUNT_DIR"
+}
 
-# Try different block sizes to find the optimal one for the smallest resulting image size
-b_values=(4096 8192 16384 32768 65536)
+echo "=== Action demandée : $ACTION_MODE ==="
+echo "Entrée : $INPUT_PATH"
+echo "Cible  : /output/$OUTPUT_TARGET"
 
-best_size=""
-best_b=""
-best_f=""
+case "$ACTION_MODE" in
 
-for b in "${b_values[@]}"; do
-    f=$(( b / 8 ))
+    # 1. Création UFS2 (.ffpkg) via makefs
+    dump_to_ffpkg)
+        mount_archive_if_needed "$INPUT_PATH"
 
-    rm -f /tmp/test.out
+        b_values=(4096 8192 16384 32768 65536)
+        best_size=""
+        best_b=""
+        best_f=""
 
-    output=$(makefs -b 0 -o b=$b,f=$f,m=0,v=2,o=space -s $b /tmp/test.out "$SOURCE_DIR" 2>&1 || true)
-    size=$(printf '%s\n' "$output" | sed -n 's/.* size of \([0-9]\+\) .*/\1/p' | head -n1)
+        for b in "${b_values[@]}"; do
+            f=$(( b / 8 ))
+            rm -f /tmp/test.out
+            output=$(makefs -b 0 -o b=$b,f=$f,m=0,v=2,o=space -s $b /tmp/test.out "$SOURCE_DIR" 2>&1 || true)
+            size=$(printf '%s\n' "$output" | sed -n 's/.* size of \([0-9]\+\) .*/\1/p' | head -n1)
+            if [[ -n "$size" ]]; then
+                if [[ -z "$best_size" || "$size" -lt "$best_size" ]]; then
+                    best_size="$size"
+                    best_b="$b"
+                    best_f="$f"
+                fi
+            fi
+        done
 
-    if [[ -n "$size" ]]; then
-        if [[ -z "$best_size" || "$size" -lt "$best_size" ]]; then
-            best_size="$size"
-            best_b="$b"
-            best_f="$f"
+        PARAM_JSON="$SOURCE_DIR/sce_sys/param.json"
+        if [ -f "$PARAM_JSON" ] && [ -z "$UFS_LABEL" ]; then
+            TITLE_ID=$(jq -r '.titleId // empty' "$PARAM_JSON")
+            DEFAULT_LANG=$(jq -r '.localizedParameters.defaultLanguage // empty' "$PARAM_JSON")
+            TITLE_NAME=$(jq -r --arg lang "$DEFAULT_LANG" '.localizedParameters[$lang].titleName // .localizedParameters["en-US"].titleName // empty' "$PARAM_JSON")
+            TITLE_NAME_CLEAN=$(echo "$TITLE_NAME" | tr -cd 'A-Za-z0-9')
+            TITLE_ID_CLEAN=$(echo "$TITLE_ID" | tr -cd 'A-Za-z0-9')
+            UFS_LABEL="${TITLE_ID_CLEAN: -5}${TITLE_NAME_CLEAN:0:11}"
         fi
-    fi
-done
 
-gb_int=$(( best_size / 1073741824 ))
-gb_frac=$(( (best_size % 1073741824) * 10 / 1073741824 ))
+        echo "Génération de l'image UFS2..."
+        makefs -b 0 -Z -o "b=$best_b,f=$best_f,m=0,v=2,o=space${UFS_LABEL:+,l=$UFS_LABEL}" "/output/$OUTPUT_TARGET" "$SOURCE_DIR"
+        ;;
 
-DIR_LISTING=$(ls -1shpd --quoting-style=escape --group-directories-first --color=always "$SOURCE_DIR"/*)
+    # 2. Création image exFAT (.exfat)
+    dump_to_exfat)
+        mount_archive_if_needed "$INPUT_PATH"
+        echo "Calcul de la taille requise..."
+        size_kb=$(du -s -B1K "$SOURCE_DIR" | awk '{print $1}')
+        total_kb=$(( size_kb + 102400 )) # Marge de 100 Mo pour les tables exFAT
 
-# Parse game title and ID from param.json
-PARAM_JSON="$SOURCE_DIR/sce_sys/param.json"
-TITLE_ID=$(jq -r '.titleId // empty' "$PARAM_JSON")
-if [ -z "$TITLE_ID" ]; then
-    echo "Error: Failed to parse titleId from param.json"
-    exit 1
-fi
+        OUT_FILE="/output/$OUTPUT_TARGET"
+        truncate -s "${total_kb}K" "$OUT_FILE"
+        mkfs.exfat "$OUT_FILE"
 
-DEFAULT_LANG=$(jq -r '.localizedParameters.defaultLanguage // empty' "$PARAM_JSON")
-if [ -n "$DEFAULT_LANG" ]; then
-    TITLE_NAME=$(jq -r --arg lang "$DEFAULT_LANG" '.localizedParameters[$lang].titleName // empty' "$PARAM_JSON")
-else
-    TITLE_NAME=$(jq -r '.localizedParameters["en-US"].titleName // empty' "$PARAM_JSON")
-fi
+        mkdir -p /tmp/.exfat_build
+        mount -o loop "$OUT_FILE" /tmp/.exfat_build
+        cp -a "$SOURCE_DIR"/* /tmp/.exfat_build/ 2>/dev/null || true
+        umount /tmp/.exfat_build
+        rmdir /tmp/.exfat_build
+        ;;
 
-if [ -z "$TITLE_NAME" ]; then
-    echo "Error: Failed to parse titleName from param.json"
-    exit 1
-fi
+    # 3. Dossier source vers PS5 PKG (.pkg)
+    dump_to_pkg)
+        echo "Compilation PKG avec fpkg-cli..."
+        fpkg-cli create --input "$(realpath "$INPUT_PATH")" --output "/output/$OUTPUT_TARGET"
+        ;;
 
-if [ -z "$UFS_LABEL" ]; then
-    TITLE_NAME_CLEAN=$(echo "$TITLE_NAME" | tr -cd 'A-Za-z0-9')
-    TITLE_ID_CLEAN=$(echo "$TITLE_ID" | tr -cd 'A-Za-z0-9')
-    UFS_LABEL="${TITLE_ID_CLEAN: -5}${TITLE_NAME_CLEAN:0:11}"
-fi
+    # 4. Image (.exfat / .ffpfsc) vers PS5 PKG (.pkg)
+    image_to_pkg)
+        INPUT_TO_MOUNT="$INPUT_PATH"
+        # Si fichier .ffpfsc, décompression préalable temporaire
+        if [[ "$INPUT_PATH" =~ \.ffpfsc$ ]]; then
+            echo "Décompression temporaire du fichier .ffpfsc vers .exfat..."
+            truncate -s 0 /tmp/temp_decompressed.exfat
+            # Utilisation de fpkg-cli ou l'outil de décompression de flux
+            fpkg-cli decompress --input "$INPUT_PATH" --output /tmp/temp_decompressed.exfat || zstd -d "$INPUT_PATH" -o /tmp/temp_decompressed.exfat
+            INPUT_TO_MOUNT="/tmp/temp_decompressed.exfat"
+        fi
 
-echo ""
-echo "Source directory for makefs will be: $SOURCE_DIR"
-echo "Content of source directory:"
-echo "$DIR_LISTING"
-echo "Detected game title: $TITLE_NAME, ID: $TITLE_ID"
-echo "The filesystem label will be: $UFS_LABEL"
-echo "Detected optimal block size for smallest image: $best_b, fragment size: $best_f"
-echo "Resulting UFS2 filesystem image size will be: $best_size bytes (~ ${gb_int}.${gb_frac} GB)"
-echo "The output filename will be: $OUTPUT_FILENAME"
-echo ""
+        mount_disk_image "$INPUT_TO_MOUNT"
+        echo "Génération du PKG depuis le montage..."
+        fpkg-cli create --input "$SOURCE_DIR" --output "/output/$OUTPUT_TARGET"
+        umount "$IMG_MOUNT_DIR"
+        rm -f /tmp/temp_decompressed.exfat
+        ;;
 
-if [ "$NO_CONFIRMATION" = false ]; then
-    while true; do
-        read -p "Please verify the above is correct. Continue? (y/n): " -r
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            break
-        elif [[ $REPLY =~ ^[Nn]$ ]]; then
-            echo "Aborted by user."
-            exit 1
+    # 5. Extraction d'une image (.exfat / .ffpfsc) vers un dossier
+    extract_image)
+        INPUT_TO_MOUNT="$INPUT_PATH"
+        if [[ "$INPUT_PATH" =~ \.ffpfsc$ ]]; then
+            echo "Décompression temporaire .ffpfsc..."
+            fpkg-cli decompress --input "$INPUT_PATH" --output /tmp/temp_decompressed.exfat || zstd -d "$INPUT_PATH" -o /tmp/temp_decompressed.exfat
+            INPUT_TO_MOUNT="/tmp/temp_decompressed.exfat"
+        fi
+
+        mount_disk_image "$INPUT_TO_MOUNT"
+        DEST_DIR="/output/$OUTPUT_TARGET"
+        mkdir -p "$DEST_DIR"
+        echo "Copie des fichiers vers $DEST_DIR..."
+        cp -a "$SOURCE_DIR"/* "$DEST_DIR/"
+        umount "$IMG_MOUNT_DIR"
+        rm -f /tmp/temp_decompressed.exfat
+        ;;
+
+    # 6. Extraction d'un package .pkg vers un dossier
+    extract_pkg)
+        DEST_DIR="/output/$OUTPUT_TARGET"
+        mkdir -p "$DEST_DIR"
+        echo "Extraction du package avec fpkg-cli..."
+        fpkg-cli extract --input "$INPUT_PATH" --output "$DEST_DIR"
+        ;;
+
+    # 7. Compression .exfat vers .ffpfsc
+    exfat_to_ffpfsc)
+        echo "Compression de l'image exFAT vers le format ffpfsc..."
+        # fpkg-cli ou compresseur de flux de blocs (sparse zstd / ffpfsc builder)
+        if command -v fpkg-cli &>/dev/null; then
+            fpkg-cli compress --input "$INPUT_PATH" --output "/output/$OUTPUT_TARGET"
         else
-            echo "Invalid input. Please enter Y or N."
+            zstd -19 --sparse "$INPUT_PATH" -o "/output/$OUTPUT_TARGET"
         fi
-    done
-else
-    echo "-y is set, skipping confirmation prompt."
-fi
+        ;;
 
-makefs -b 0 -Z -o "b=$best_b,f=$best_f,m=0,v=2,o=space${UFS_LABEL:+,l=$UFS_LABEL}" "/output/$OUTPUT_FILENAME" "$SOURCE_DIR"
+    # 8. Décompression .ffpfsc vers .exfat
+    ffpfsc_to_exfat)
+        echo "Décompression de l'image .ffpfsc vers .exfat brute..."
+        if command -v fpkg-cli &>/dev/null; then
+            fpkg-cli decompress --input "$INPUT_PATH" --output "/output/$OUTPUT_TARGET"
+        else
+            zstd -d "$INPUT_PATH" -o "/output/$OUTPUT_TARGET"
+        fi
+        ;;
+
+    *)
+        echo "Erreur : Mode inconnu '$ACTION_MODE'"
+        exit 1
+        ;;
+esac
+
+echo "Opération terminée avec succès."
