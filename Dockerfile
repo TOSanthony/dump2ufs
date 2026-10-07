@@ -6,6 +6,8 @@ FROM debian:13-slim AS builder
 ARG MAKEFS_REF=tags/r13
 ARG FUSE_ARCHIVE_REF=tags/v1.16
 
+ENV DEBIAN_FRONTEND=noninteractive
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     ca-certificates \
@@ -19,13 +21,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libfuse3-dev \
     libarchive-dev
 
-# 1. Compilation de makefs et copie directe du binaire
+# 1. Compilation et installation de makefs
 RUN wget -O - https://github.com/kusumi/makefs/archive/refs/${MAKEFS_REF}.tar.gz | tar -xz -C / && \
     cd /makefs-${MAKEFS_REF##*/} && \
     make USE_HAMMER2=0 USE_EXFAT=0 && \
-    cp makefs /usr/local/bin/makefs
+    make install && \
+    # makefs s'installe généralement dans /usr/sbin ou /usr/local/sbin
+    cp $(find /makefs-${MAKEFS_REF##*/} -name makefs -type f -perm /111 | head -n 1) /usr/local/bin/makefs
 
-# 2. Compilation de fuse-archive (sans 'make install') et copie directe
+# 2. Compilation de fuse-archive
 RUN wget -O - https://github.com/google/fuse-archive/archive/refs/${FUSE_ARCHIVE_REF}.tar.gz | tar -xz -C / && \
     FUSE_DIR=${FUSE_ARCHIVE_REF##*/} && \
     cd /fuse-archive-${FUSE_DIR#v} && \
@@ -38,6 +42,7 @@ RUN wget -O - https://github.com/google/fuse-archive/archive/refs/${FUSE_ARCHIVE
 FROM debian:13-slim
 
 ARG TARGETARCH
+ENV DEBIAN_FRONTEND=noninteractive
 
 # 1. Dépendances d'exécution (Apache, PHP, FUSE, utilitaires disques, zstd)
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -62,11 +67,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /usr/local/bin/makefs /usr/local/bin/makefs
 COPY --from=builder /usr/local/bin/fuse-archive /usr/local/bin/fuse-archive
 
-# 3. Installation du runtime .NET (adapté à l'architecture amd64 / arm64)
+# 3. Installation du runtime .NET (architecture automatique via le script Microsoft)
 RUN curl -sSL https://dot.net/v1/dotnet-install.sh | bash /dev/stdin --runtime dotnet --install-dir /usr/share/dotnet && \
     ln -s /usr/share/dotnet/dotnet /usr/local/bin/dotnet
 
-# 4. Installation de fpkg-cli selon l'architecture cible
+# 4. Installation de fpkg-cli selon l'architecture cible (amd64 / arm64)
 RUN ARCH_PATTERN=$([ "$TARGETARCH" = "arm64" ] && echo "linux-arm64" || echo "linux-x64") && \
     FPKG_URL=$(curl -s https://api.github.com/repos/SvenGDK/LibProsperoPkg/releases/latest | jq -r --arg pat "$ARCH_PATTERN" '.assets[] | select(.name | test($pat + ".*(tar\\.gz|zip)$")) | .browser_download_url' | head -n 1) && \
     mkdir -p /opt/fpkg-cli && \
