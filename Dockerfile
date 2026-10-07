@@ -28,7 +28,7 @@ RUN wget -O - https://github.com/kusumi/makefs/archive/refs/${MAKEFS_REF}.tar.gz
     make install && \
     cp $(find /makefs-${MAKEFS_REF##*/} -name makefs -type f -perm /111 | head -n 1) /usr/local/bin/makefs
 
-# 2. Compilation de fuse-archive (binaire situé dans out/)
+# 2. Compilation de fuse-archive
 RUN wget -O - https://github.com/google/fuse-archive/archive/refs/${FUSE_ARCHIVE_REF}.tar.gz | tar -xz -C / && \
     FUSE_DIR=${FUSE_ARCHIVE_REF##*/} && \
     cd /fuse-archive-${FUSE_DIR#v} && \
@@ -71,20 +71,23 @@ COPY --from=builder /usr/local/bin/fuse-archive /usr/local/bin/fuse-archive
 RUN curl -sSL https://dot.net/v1/dotnet-install.sh | bash /dev/stdin --runtime dotnet --install-dir /usr/share/dotnet && \
     ln -s /usr/share/dotnet/dotnet /usr/local/bin/dotnet
 
-# 4. Téléchargement et extraction de fpkg-cli (.zip)
+# 4. Téléchargement et détection dynamique de l'exécutable fpkg-cli
 RUN ARCH_PATTERN=$([ "$TARGETARCH" = "arm64" ] && echo "linux-arm64" || echo "linux-x64") && \
     FPKG_URL=$(curl -s https://api.github.com/repos/SvenGDK/LibProsperoPkg/releases/latest | jq -r --arg pat "$ARCH_PATTERN" '.assets[] | select(.name | test($pat + ".*\\.zip$")) | .browser_download_url' | head -n 1) && \
-    mkdir -p /opt/fpkg-cli && \
-    if [ -n "$FPKG_URL" ]; then \
+    mkdir -p /tmp/fpkg_extract && \
+    if [ -n "$FPKG_URL" ] && [ "$FPKG_URL" != "null" ]; then \
         wget -q -O /tmp/fpkg-cli.zip "$FPKG_URL" && \
-        unzip -q /tmp/fpkg-cli.zip -d /opt/fpkg-cli/ && \
-        rm -f /tmp/fpkg-cli.zip && \
-        chmod +x /opt/fpkg-cli/fpkg-cli && \
-        ln -s /opt/fpkg-cli/fpkg-cli /usr/local/bin/fpkg-cli; \
+        unzip -q /tmp/fpkg-cli.zip -d /tmp/fpkg_extract && \
+        BIN_PATH=$(find /tmp/fpkg_extract -type f -name "*fpkg-cli*" -o -name "*LibProsperoPkg*" | head -n 1) && \
+        if [ -n "$BIN_PATH" ]; then \
+            chmod +x "$BIN_PATH" && \
+            cp "$BIN_PATH" /usr/local/bin/fpkg-cli; \
+        fi && \
+        rm -rf /tmp/fpkg_extract /tmp/fpkg-cli.zip; \
     fi
 
 ENV DOTNET_ROOT=/usr/share/dotnet
-ENV PATH="${PATH}:/usr/share/dotnet:/opt/fpkg-cli"
+ENV PATH="${PATH}:/usr/share/dotnet"
 
 # Fichiers applicatifs Web
 COPY index.php /var/www/html/index.php
