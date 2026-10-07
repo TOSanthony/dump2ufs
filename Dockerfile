@@ -14,29 +14,30 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     g++ \
     make \
     pkg-config \
-    pandoc \
     libc6-dev \
     libboost-container-dev \
     libfuse3-dev \
     libarchive-dev
 
-# 1. Compilation de makefs
+# 1. Compilation de makefs et copie directe du binaire
 RUN wget -O - https://github.com/kusumi/makefs/archive/refs/${MAKEFS_REF}.tar.gz | tar -xz -C / && \
     cd /makefs-${MAKEFS_REF##*/} && \
     make USE_HAMMER2=0 USE_EXFAT=0 && \
-    make install
+    cp makefs /usr/local/bin/makefs
 
-# 2. Compilation de fuse-archive (avec VERSION forcée pour éviter l'erreur de build)
+# 2. Compilation de fuse-archive (sans 'make install') et copie directe
 RUN wget -O - https://github.com/google/fuse-archive/archive/refs/${FUSE_ARCHIVE_REF}.tar.gz | tar -xz -C / && \
     FUSE_DIR=${FUSE_ARCHIVE_REF##*/} && \
     cd /fuse-archive-${FUSE_DIR#v} && \
     make VERSION="${FUSE_ARCHIVE_REF##*/}" && \
-    make install
+    cp fuse-archive /usr/local/bin/fuse-archive
 
 # ==========================================
 # Étape 2 : Image finale d'exécution
 # ==========================================
 FROM debian:13-slim
+
+ARG TARGETARCH
 
 # 1. Dépendances d'exécution (Apache, PHP, FUSE, utilitaires disques, zstd)
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -61,12 +62,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /usr/local/bin/makefs /usr/local/bin/makefs
 COPY --from=builder /usr/local/bin/fuse-archive /usr/local/bin/fuse-archive
 
-# 3. Installation du runtime .NET
+# 3. Installation du runtime .NET (adapté à l'architecture amd64 / arm64)
 RUN curl -sSL https://dot.net/v1/dotnet-install.sh | bash /dev/stdin --runtime dotnet --install-dir /usr/share/dotnet && \
     ln -s /usr/share/dotnet/dotnet /usr/local/bin/dotnet
 
-# 4. Installation de fpkg-cli
-RUN FPKG_URL=$(curl -s https://api.github.com/repos/SvenGDK/LibProsperoPkg/releases/latest | jq -r '.assets[] | select(.name | test("linux-x64.*tar\\.gz$|linux-x64.*zip$")) | .browser_download_url' | head -n 1) && \
+# 4. Installation de fpkg-cli selon l'architecture cible
+RUN ARCH_PATTERN=$([ "$TARGETARCH" = "arm64" ] && echo "linux-arm64" || echo "linux-x64") && \
+    FPKG_URL=$(curl -s https://api.github.com/repos/SvenGDK/LibProsperoPkg/releases/latest | jq -r --arg pat "$ARCH_PATTERN" '.assets[] | select(.name | test($pat + ".*(tar\\.gz|zip)$")) | .browser_download_url' | head -n 1) && \
     mkdir -p /opt/fpkg-cli && \
     if [ -n "$FPKG_URL" ]; then \
         wget -qO- "$FPKG_URL" | tar -xz -C /opt/fpkg-cli/ && \
