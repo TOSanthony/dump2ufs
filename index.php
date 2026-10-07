@@ -5,57 +5,68 @@ $status = "";
 $input_dir = "/input";
 $output_dir = "/output";
 
-// Extensions d'archives supportées
-$archive_extensions = ['rar', 'zip', '7z', 'tar', 'gz', 'bz2'];
+// Définition de toutes les actions disponibles
+$actions = [
+    'dump_to_ffpkg'   => ['label' => 'Créer image UFS2 (.ffpkg) depuis Dossier / Archive', 'type' => 'file_or_dir', 'ext' => ['rar', 'zip', '7z', 'tar', 'gz'], 'out_type' => 'file', 'def_ext' => '.ffpkg'],
+    'dump_to_exfat'   => ['label' => 'Créer image exFAT (.exfat) depuis Dossier / Archive', 'type' => 'file_or_dir', 'ext' => ['rar', 'zip', '7z', 'tar', 'gz'], 'out_type' => 'file', 'def_ext' => '.exfat'],
+    'dump_to_pkg'     => ['label' => 'Convertir Dossier / Dump vers Package PS5 (.pkg)', 'type' => 'dir_only', 'ext' => [], 'out_type' => 'file', 'def_ext' => '.pkg'],
+    'image_to_pkg'    => ['label' => 'Convertir Image (.exfat / .ffpfsc) vers Package PS5 (.pkg)', 'type' => 'file_only', 'ext' => ['exfat', 'ffpfsc'], 'out_type' => 'file', 'def_ext' => '.pkg'],
+    'extract_image'   => ['label' => 'Extraire Image (.exfat / .ffpfsc) vers Dossier de jeu', 'type' => 'file_only', 'ext' => ['exfat', 'ffpfsc'], 'out_type' => 'dir', 'def_ext' => ''],
+    'extract_pkg'     => ['label' => 'Extraire Package PS5 (.pkg) vers Dossier de jeu', 'type' => 'file_only', 'ext' => ['pkg'], 'out_type' => 'dir', 'def_ext' => ''],
+    'exfat_to_ffpfsc' => ['label' => 'Convertir Image .exfat vers .ffpfsc (Format Compressé)', 'type' => 'file_only', 'ext' => ['exfat'], 'out_type' => 'file', 'def_ext' => '.ffpfsc'],
+    'ffpfsc_to_exfat' => ['label' => 'Décompresser Image .ffpfsc vers .exfat brute', 'type' => 'file_only', 'ext' => ['ffpfsc'], 'out_type' => 'file', 'def_ext' => '.exfat'],
+];
 
-// Lister les éléments disponibles dans /input (dossiers et fichiers valides)
-$inputs = [];
+// Lister tous les éléments disponibles dans /input
+$all_inputs = [];
 if (is_dir($input_dir)) {
     $scan = array_diff(scandir($input_dir), ['.', '..']);
     foreach ($scan as $item) {
         $path = $input_dir . '/' . $item;
-        if (is_dir($path)) {
-            $inputs[] = $item;
-        } else {
-            $ext = strtolower(pathinfo($item, PATHINFO_EXTENSION));
-            if (in_array($ext, $archive_extensions)) {
-                $inputs[] = $item;
-            }
-        }
+        $is_dir = is_dir($path);
+        $ext = strtolower(pathinfo($item, PATHINFO_EXTENSION));
+        $all_inputs[] = [
+            'name' => $item,
+            'is_dir' => $is_dir,
+            'ext' => $ext
+        ];
     }
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $action_key = $_POST['action_mode'] ?? 'dump_to_ffpkg';
     $selected_input = $_POST['input_path'] ?? '';
-    $output_filename = $_POST['output_filename'] ?? '';
-    $format = $_POST['format'] ?? 'ffpkg';
-    
-    if (!empty($selected_input) && !empty($output_filename)) {
+    $output_target = trim($_POST['output_target'] ?? '');
+
+    if (!empty($selected_input) && !empty($output_target) && isset($actions[$action_key])) {
         $full_input = $input_dir . '/' . $selected_input;
+        $action_info = $actions[$action_key];
         
-        // S'assurer de l'extension correcte selon le format choisi
-        if ($format === 'exfat') {
-            if (!str_ends_with($output_filename, '.exfat')) $output_filename .= '.exfat';
-        } else {
-            if (!str_ends_with($output_filename, '.ffpkg')) $output_filename .= '.ffpkg';
+        // Ajuster l'extension si la sortie attendue est un fichier
+        if ($action_info['out_type'] === 'file' && !empty($action_info['def_ext'])) {
+            if (!str_ends_with(strtolower($output_target), $action_info['def_ext'])) {
+                $output_target .= $action_info['def_ext'];
+            }
         }
-        
-        // Commande d'exécution vers l'entrypoint bash (gère automatiquement les dossiers ou les fichiers .rar)
-        $cmd = "bash /usr/local/bin/entrypoint.sh -i " . escapeshellarg($full_input) . " -o " . escapeshellarg($output_filename) . " -y 2>&1";
-        
+
+        // Appel de entrypoint.sh avec le flag d'action -m (--mode)
+        $cmd = "bash /usr/local/bin/entrypoint.sh -m " . escapeshellarg($action_key) . 
+               " -i " . escapeshellarg($full_input) . 
+               " -o " . escapeshellarg($output_target) . " -y 2>&1";
+
         $output_log = [];
         $return_var = 0;
         exec($cmd, $output_log, $return_var);
-        
+
         if ($return_var === 0) {
-            $message = "Conversion réussie ! Fichier généré : " . htmlspecialchars($output_filename);
+            $message = "Opération terminée avec succès ! Cible : <strong>" . htmlspecialchars($output_target) . "</strong>";
             $status = "success";
         } else {
-            $message = "Erreur lors de la conversion :<br><pre>" . htmlspecialchars(implode("\n", $output_log)) . "</pre>";
+            $message = "Erreur d'exécution :<br><pre>" . htmlspecialchars(implode("\n", $output_log)) . "</pre>";
             $status = "error";
         }
     } else {
-        $message = "Veuillez sélectionner un élément source et indiquer un nom de fichier de sortie.";
+        $message = "Veuillez sélectionner une action valide, un élément source et indiquer une destination.";
         $status = "error";
     }
 }
@@ -64,7 +75,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <html lang="fr">
 <head>
   <meta charset="UTF-8">
-  <title>dump2ufs v1.4.0 - PS5 Game Dump Converter</title>
+  <title>PS5 Toolstation & Dump Converter</title>
   <style>
     :root {
       --bg-main: #0b0f19;
@@ -83,206 +94,203 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       background-color: var(--bg-main);
       color: var(--text-main);
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      height: 100vh;
+      min-height: 100vh;
       display: flex;
       flex-direction: column;
-      justify-content: space-between;
-      overflow: hidden;
     }
     .app-header {
       display: flex;
       align-items: center;
-      padding: 12px 20px;
+      padding: 14px 24px;
       border-bottom: 1px solid var(--border-color);
       background: var(--bg-card);
-      font-size: 14px;
     }
-    .app-title { display: flex; align-items: center; gap: 10px; font-weight: 600; }
+    .app-title { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 15px; }
     .app-version { color: #a855f7; font-size: 12px; font-weight: 500; }
-    .app-subtitle { color: var(--text-muted); font-size: 11px; margin-left: 8px; }
+    .app-subtitle { color: var(--text-muted); font-size: 12px; margin-left: 10px; }
 
     .app-body {
-      padding: 20px;
+      padding: 24px;
       display: flex;
       flex-direction: column;
       gap: 16px;
       flex: 1;
-      max-width: 1200px;
+      max-width: 1000px;
       width: 100%;
       margin: 0 auto;
     }
-    .dropzone {
+    .card {
       background: var(--bg-card);
-      border: 1px dashed var(--border-color);
-      border-radius: 12px;
-      padding: 20px;
-      text-align: center;
-      color: var(--text-muted);
-    }
-    .dropzone select {
-      margin-top: 10px;
-      width: 100%;
-      max-width: 400px;
-      padding: 10px;
-      background: var(--bg-input);
       border: 1px solid var(--border-color);
-      color: var(--text-main);
-      border-radius: 6px;
-      font-size: 13px;
-    }
-    .output-row {
-      display: flex;
-      gap: 12px;
-      background: var(--bg-card);
-      padding: 12px;
       border-radius: 10px;
-      border: 1px solid var(--border-color);
-      align-items: center;
+      padding: 16px 20px;
     }
-    .output-label { font-size: 13px; color: var(--text-muted); white-space: nowrap; }
-    .output-input {
-      flex: 1;
+    .card-label {
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+    select, input[type="text"] {
+      width: 100%;
       background: var(--bg-input);
       border: 1px solid var(--border-color);
-      border-radius: 6px;
-      padding: 8px 12px;
       color: var(--text-main);
+      padding: 10px 12px;
+      border-radius: 6px;
       font-size: 13px;
     }
-    .queue-box {
-      flex: 1;
-      background: var(--bg-card);
-      border: 1px solid var(--border-color);
-      border-radius: 12px;
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
+    select:focus, input[type="text"]:focus {
+      outline: none;
+      border-color: var(--accent);
     }
-    .queue-header {
-      padding: 12px 16px;
-      border-bottom: 1px solid var(--border-color);
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      font-size: 13px;
-    }
-    .queue-content {
-      padding: 16px;
-      overflow-y: auto;
-      flex: 1;
-    }
-    .alert { padding: 10px; border-radius: 6px; font-size: 12px; margin-bottom: 10px; }
+    .alert { padding: 12px 16px; border-radius: 6px; font-size: 13px; }
     .alert.success { background: rgba(16,185,129,0.15); color: var(--success); border: 1px solid rgba(16,185,129,0.3); }
     .alert.error { background: rgba(239,68,68,0.15); color: var(--error); border: 1px solid rgba(239,68,68,0.3); }
-    pre { white-space: pre-wrap; font-size: 11px; margin-top: 5px; }
+    pre { white-space: pre-wrap; font-size: 11px; margin-top: 8px; }
 
     .bottom-bar {
       display: flex;
       justify-content: space-between;
       align-items: center;
       background: var(--bg-card);
-      padding: 14px 20px;
+      padding: 16px 24px;
       border-top: 1px solid var(--border-color);
+      margin-top: auto;
     }
-    .format-group { display: flex; align-items: center; gap: 12px; }
-    .select-format {
-      background: var(--bg-input);
-      border: 1px solid var(--border-color);
-      color: var(--text-main);
-      padding: 8px 12px;
-      border-radius: 6px;
-      font-size: 13px;
-    }
-    .status-badge { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--success); }
-    .status-dot { width: 8px; height: 8px; background: var(--success); border-radius: 50%; }
     .btn-convert {
       background: var(--accent);
       color: white;
       border: none;
-      padding: 10px 24px;
+      padding: 12px 28px;
       border-radius: 6px;
       font-weight: 600;
       font-size: 13px;
       cursor: pointer;
+      transition: background 0.2s;
     }
     .btn-convert:hover { background: var(--accent-hover); }
-    .footer-log {
-      background: #030712;
-      padding: 6px 16px;
-      font-size: 11px;
-      color: var(--text-muted);
-      border-top: 1px solid var(--border-color);
-    }
+    .meta-desc { font-size: 12px; color: var(--text-muted); margin-top: 6px; }
   </style>
 </head>
 <body>
 
   <div class="app-header">
     <div class="app-title">
-      📦 dump2ufs <span class="app-version">v1.4.0</span>
-      <span class="app-subtitle">PS5 Game Dump Converter</span>
+      📦 PS5 Toolstation <span class="app-version">v2.0</span>
+      <span class="app-subtitle">UFS2 / exFAT / FFPFSC / PKG Builder</span>
     </div>
   </div>
 
-  <form method="POST" class="app-body">
+  <form method="POST" class="app-body" id="mainForm">
     
     <?php if($message): ?>
       <div class="alert <?php echo $status; ?>"><?php echo $message; ?></div>
     <?php endif; ?>
 
-    <!-- Sélection de la source (Dossier ou Archive .rar / .zip) -->
-    <div class="dropzone">
-      <div style="font-size: 24px; margin-bottom: 5px;">📂</div>
-      <div style="font-size: 13px; font-weight: 500;">Sélectionnez un dossier de jeu ou une archive (.rar) depuis /input</div>
-      <select name="input_path" required>
-        <option value="">-- Choisissez un dossier ou une archive source --</option>
-        <?php foreach($inputs as $item): ?>
-          <option value="<?php echo htmlspecialchars($item); ?>"><?php echo htmlspecialchars($item); ?></option>
+    <!-- 1. Sélection de l'action / opération -->
+    <div class="card">
+      <div class="card-label">⚙️ Opération à effectuer</div>
+      <select name="action_mode" id="action_mode" onchange="updateFormContext()" required>
+        <?php foreach($actions as $key => $info): ?>
+          <option value="<?php echo $key; ?>"><?php echo htmlspecialchars($info['label']); ?></option>
+        <?php endforeach; ?>
+      </select>
+      <div class="meta-desc" id="action_help">Sélectionnez le mode de traitement adapté à vos fichiers.</div>
+    </div>
+
+    <!-- 2. Sélection de l'élément source dans /input -->
+    <div class="card">
+      <div class="card-label">📂 Fichier ou Dossier source (/input)</div>
+      <select name="input_path" id="input_path" required>
+        <option value="">-- Choisissez un élément --</option>
+        <?php foreach($all_inputs as $in): ?>
+          <option value="<?php echo htmlspecialchars($in['name']); ?>" 
+                  data-isdir="<?php echo $in['is_dir'] ? '1' : '0'; ?>" 
+                  data-ext="<?php echo htmlspecialchars($in['ext']); ?>">
+            <?php echo ($in['is_dir'] ? '📁 ' : '📄 ') . htmlspecialchars($in['name']); ?>
+          </option>
         <?php endforeach; ?>
       </select>
     </div>
 
-    <!-- Output Directory -->
-    <div class="output-row">
-      <span class="output-label">📁 Output Filename:</span>
-      <input type="text" name="output_filename" class="output-input" placeholder="ex: mon_jeu.ffpkg" required>
+    <!-- 3. Nom de destination dans /output -->
+    <div class="card">
+      <div class="card-label" id="target_label">📁 Nom du fichier de sortie (/output)</div>
+      <input type="text" name="output_target" id="output_target" placeholder="ex: mon_jeu" required>
+      <div class="meta-desc" id="target_help">Indiquez le nom final souhaité.</div>
     </div>
 
-    <!-- Conversion Queue / Infos -->
-    <div class="queue-box">
-      <div class="queue-header">
-        <span>📋 Status & Informations</span>
+    <!-- Barre inférieure d'exécution -->
+    <div class="bottom-bar">
+      <div style="font-size: 13px; color: var(--text-muted);">
+        Traitement conteneurisé natif Linux (.NET 10 / makefs / fuse)
       </div>
-      <div class="queue-content">
-        <div style="color: var(--text-muted); font-size: 12px; line-height: 1.5;">
-          • Compatible avec les dossiers de jeux et les archives compressées (<code style="color:var(--text-main)">.rar</code>, etc.) situés dans <code style="color:var(--text-main)">/input</code>.<br>
-          • L'outil monte automatiquement les archives via FUSE et génère le fichier UFS2 dans <code style="color:var(--text-main)">/output</code>.
-        </div>
-      </div>
-    </div>
-
-    <!-- Bottom Bar inside form to submit -->
-    <div class="bottom-bar" style="position: absolute; bottom: 24px; left: 0; right: 0; width: 100%;">
-      <div class="format-group">
-        <span style="font-size: 13px; color: var(--text-muted);">Format:</span>
-        <select name="format" class="select-format">
-          <option value="ffpkg">UFS2 Image (.ffpkg)</option>
-          <option value="exfat">exFAT Image (.exfat)</option>
-        </select>
-        <div class="status-badge">
-          <div class="status-dot"></div>
-          <span>Container ready</span>
-        </div>
-      </div>
-      <div>
-        <button type="submit" class="btn-convert">⚡ Convert to UFS2</button>
-      </div>
+      <button type="submit" class="btn-convert" id="submit_btn">⚡ Démarrer l'opération</button>
     </div>
   </form>
 
-  <div class="footer-log">
-    <span>Ready — En attente d'une action</span>
-  </div>
+  <script>
+    const actionsConfig = <?php echo json_encode($actions); ?>;
 
+    function updateFormContext() {
+      const mode = document.getElementById('action_mode').value;
+      const config = actionsConfig[mode];
+      const sourceSelect = document.getElementById('input_path');
+      const targetLabel = document.getElementById('target_label');
+      const targetInput = document.getElementById('output_target');
+      const targetHelp = document.getElementById('target_help');
+      const btn = document.getElementById('submit_btn');
+
+      // Filtrer et adapter les options de sources selon le type requis
+      const options = sourceSelect.querySelectorAll('option');
+      options.forEach(opt => {
+        if (!opt.value) return;
+        const isDir = opt.getAttribute('data-isdir') === '1';
+        const ext = opt.getAttribute('data-ext');
+
+        let show = true;
+        if (config.type === 'dir_only' && !isDir) show = false;
+        if (config.type === 'file_only' && isDir) show = false;
+        if (config.type === 'file_only' && config.ext.length > 0 && !config.ext.includes(ext)) show = false;
+        
+        opt.style.display = show ? '' : 'none';
+        opt.disabled = !show;
+      });
+
+      // Adapter le libellé de sortie
+      if (config.out_type === 'dir') {
+        targetLabel.innerText = "📁 Nom du sous-dossier de sortie (/output)";
+        targetInput.placeholder = "ex: dump_extrait";
+        targetHelp.innerText = "Un dossier contenant l'intégralité du contenu sera créé dans /output.";
+        btn.innerText = "⚡ Lancer l'extraction";
+      } else {
+        targetLabel.innerText = "📄 Nom du fichier de sortie (/output)";
+        targetInput.placeholder = "ex: MonJeu" + config.def_ext;
+        targetHelp.innerText = "Le fichier généré aura automatiquement l'extension " + config.def_ext;
+        btn.innerText = "⚡ Lancer la conversion";
+      }
+    }
+
+    // Auto-remplissage intuitif du nom de sortie quand l'utilisateur choisit sa source
+    document.getElementById('input_path').addEventListener('change', function() {
+      const val = this.value;
+      if (!val) return;
+      const mode = document.getElementById('action_mode').value;
+      const config = actionsConfig[mode];
+      
+      let baseName = val.replace(/\.[^/.]+$/, ""); // Retire l'extension
+      if (config.out_type === 'file') {
+        document.getElementById('output_target').value = baseName + config.def_ext;
+      } else {
+        document.getElementById('output_target').value = baseName + "_extracted";
+      }
+    });
+
+    // Initialisation au chargement
+    updateFormContext();
+  </script>
 </body>
 </html>
