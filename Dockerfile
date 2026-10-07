@@ -99,4 +99,8 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 
 EXPOSE 80
 
+# Force Apache à s'exécuter sous root pour éviter les blocages de permissions sur les montages
+ENV APACHE_RUN_USER=root
+ENV APACHE_RUN_GROUP=root
+
 CMD ["apache2ctl", "-D", "FOREGROUND"]
